@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import Layout from '../components/Layout'
 import Did from '../components/Did'
 import {
+  ApiError,
   deleteAccount,
   deriveKeyPair,
   getAccount,
@@ -13,6 +14,34 @@ import {
 
 const DID_KEY_PATTERN = /^did:key:z6Mk[1-9A-HJ-NP-Za-km-z]{44}$/
 
+// Every action the API records, including the corrections it appends when an
+// action was recorded and then did not apply. Anything unrecognised shows its
+// raw action rather than being labelled as one of these: mislabelling an
+// aborted handover as a completed one would be worse than saying nothing.
+const ACTION_LABELS: Record<string, string> = {
+  'account.delete': 'Account deleted',
+  'account.delete.aborted': 'Deletion recorded but not applied',
+  'account.did.reset': 'Controlling DID reset',
+  'account.did.reset.aborted': 'DID reset recorded but not applied',
+  'admin.add': 'Admin registered',
+  'admin.rekey': 'Admin key changed',
+  'admin.remove': 'Admin removed'
+}
+
+// A request that failed without a readable status may or may not have been
+// carried out — see the CORS note in lib/api.ts. For a destructive action that
+// distinction matters more than any other, so it is never glossed.
+function actionFailureMessage(error: unknown, whatItWouldHaveDone: string): string {
+  const status = error instanceof ApiError ? error.status : 0
+  if (status === 0) {
+    return `The request could not be read back, so it is not possible to tell whether ${whatItWouldHaveDone}. Reload this page before trying again.`
+  }
+  if (status === 409) {
+    return 'This account changed while the request was in flight, so nothing was done. Reload and try again.'
+  }
+  return error instanceof Error ? error.message : 'The request failed.'
+}
+
 export default function AccountPage() {
   const [params] = useSearchParams()
   const navigate = useNavigate()
@@ -20,18 +49,31 @@ export default function AccountPage() {
 
   const [account, setAccount] = useState<Account | null>(null)
   const [history, setHistory] = useState<AuditEntry[]>([])
+  const [deleted, setDeleted] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
+    // Cleared before the request, so a slow load never shows one account's
+    // details - or its armed delete button - under another's heading.
+    setAccount(null)
+    setHistory([])
+    setDeleted(false)
     try {
       const result = await getAccount(email)
       setAccount(result.account)
       setHistory(result.history)
-    } catch {
-      setError('Could not load this account.')
+      // The API answers 404 with the account's history when it has been
+      // deleted. Only that is a deletion; a request that failed is not.
+      setDeleted(result.account === null)
+    } catch (err) {
+      setError(
+        err instanceof ApiError && err.status === 0
+          ? 'Could not reach the admin API. This account may still exist — nothing here is up to date.'
+          : 'Could not load this account.'
+      )
     } finally {
       setLoading(false)
     }
@@ -40,6 +82,19 @@ export default function AccountPage() {
   useEffect(() => {
     if (email) load()
   }, [email, load])
+
+  if (!email) {
+    return (
+      <Layout>
+        <p className="text-sm text-gray-600">
+          No account given.{' '}
+          <Link to="/accounts" className="text-indigo-700 hover:underline">
+            Pick one from the list.
+          </Link>
+        </p>
+      </Layout>
+    )
+  }
 
   return (
     <Layout>
@@ -50,13 +105,16 @@ export default function AccountPage() {
       <h1 className="mt-3 text-xl font-semibold break-all text-gray-900">{email}</h1>
 
       {error && (
-        <p role="alert" className="mt-4 text-sm text-red-600">
-          {error}
+        <p role="alert" className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          {error}{' '}
+          <button type="button" onClick={load} className="font-medium underline">
+            Retry
+          </button>
         </p>
       )}
       {loading && <p className="mt-4 text-sm text-gray-500">Loading…</p>}
 
-      {!loading && !account && (
+      {deleted && (
         <p className="mt-4 rounded-2xl border border-gray-200 bg-white p-6 text-sm text-gray-600">
           This account no longer exists. Its history is below, and it includes
           the row that was removed — putting that row back restores the account
@@ -93,8 +151,14 @@ export default function AccountPage() {
             </div>
           </dl>
 
-          <ResetDidPanel account={account} onDone={load} />
-          <DeletePanel account={account} onDeleted={() => navigate('/accounts')} />
+          {/* Keyed by account, so switching accounts resets what is typed into
+              them rather than carrying it across. */}
+          <ResetDidPanel key={`reset-${account.email}`} account={account} onDone={load} />
+          <DeletePanel
+            key={`delete-${account.email}`}
+            account={account}
+            onDeleted={() => navigate('/accounts')}
+          />
         </>
       )}
 
@@ -111,6 +175,7 @@ function ResetDidPanel({ account, onDone }: { account: Account; onDone: () => vo
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [handover, setHandover] = useState<{ passphrase: string; did: string } | null>(null)
 
   // Derived here rather than anywhere else: a passphrase typed into this box
   // stays in this browser, and only the resulting public DID is sent.
@@ -120,9 +185,16 @@ function ResetDidPanel({ account, onDone }: { account: Account; onDone: () => vo
       setDerivedDid('')
       return
     }
-    deriveKeyPair(passphrase).then((keyPair) => {
-      if (current) setDerivedDid(keyPair.controller as string)
-    })
+    deriveKeyPair(passphrase)
+      .then((keyPair) => {
+        if (current) setDerivedDid(keyPair.controller as string)
+      })
+      .catch(() => {
+        if (current) {
+          setDerivedDid('')
+          setError('Could not derive a key from that passphrase.')
+        }
+      })
     return () => {
       current = false
     }
@@ -136,12 +208,18 @@ function ResetDidPanel({ account, onDone }: { account: Account; onDone: () => vo
     setError('')
     try {
       await resetDid(account.email, chosenDid, reason)
+      // The admin-chosen passphrase is the credential the account holder now
+      // needs. It is kept on screen until dismissed rather than cleared on
+      // success, which would destroy it at the moment it starts to matter.
+      if (mode === 'derive') {
+        setHandover({ passphrase, did: chosenDid })
+      }
       setDid('')
       setPassphrase('')
       setReason('')
       onDone()
     } catch (err) {
-      setError((err as Error).message)
+      setError(actionFailureMessage(err, 'the DID was changed'))
     } finally {
       setBusy(false)
     }
@@ -156,6 +234,27 @@ function ResetDidPanel({ account, onDone }: { account: Account; onDone: () => vo
         The change is recorded against your name, and the current DID is kept so
         it can be undone.
       </p>
+
+      {handover && (
+        <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm">
+          <p className="font-medium text-amber-900">
+            Give {account.email} this passphrase, then forget it.
+          </p>
+          <p className="mt-2 font-mono text-base break-all text-amber-900">
+            {handover.passphrase}
+          </p>
+          <p className="mt-2 font-mono text-xs break-all text-amber-800">
+            {handover.did}
+          </p>
+          <button
+            type="button"
+            onClick={() => setHandover(null)}
+            className="mt-3 text-xs font-medium text-amber-900 underline"
+          >
+            I have passed it on — hide it
+          </button>
+        </div>
+      )}
 
       <div className="mt-4 space-y-3">
         <label className="flex items-start gap-2 text-sm">
@@ -274,7 +373,7 @@ function DeletePanel({ account, onDeleted }: { account: Account; onDeleted: () =
       download(`${account.email}-account-record.json`, JSON.stringify(result.deleted, null, 2))
       onDeleted()
     } catch (err) {
-      setError((err as Error).message)
+      setError(actionFailureMessage(err, 'the account was deleted'))
       setBusy(false)
     }
   }
@@ -342,7 +441,7 @@ function History({ entries }: { entries: AuditEntry[] }) {
           >
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <span className="font-medium text-gray-900">
-                {entry.action === 'account.delete' ? 'Account deleted' : 'Controlling DID reset'}
+                {ACTION_LABELS[entry.action] ?? entry.action}
               </span>
               <span className="text-xs text-gray-500">
                 {new Date(entry.createdAt).toLocaleString()}
@@ -352,6 +451,9 @@ function History({ entries }: { entries: AuditEntry[] }) {
               by {entry.adminEmail || 'an admin'}{' '}
               <span className="font-mono text-xs text-gray-400">{entry.adminDid}</span>
             </p>
+            {entry.detail?.why && (
+              <p className="mt-1 text-gray-600">{entry.detail.why}</p>
+            )}
             {entry.detail?.previousDid && (
               <p className="mt-2 font-mono text-xs break-all text-gray-500">
                 {entry.detail.previousDid} → {entry.detail.newDid}
@@ -377,11 +479,20 @@ function History({ entries }: { entries: AuditEntry[] }) {
   )
 }
 
+// The anchor is attached to the document before it is clicked, and the object
+// URL outlives the click: a detached anchor or a synchronously revoked URL
+// works in Chromium and silently does nothing in some other browsers - and
+// this is the only copy of a row that has just been deleted.
 function download(filename: string, contents: string) {
   const url = URL.createObjectURL(new Blob([contents], { type: 'application/json' }))
   const anchor = document.createElement('a')
   anchor.href = url
   anchor.download = filename
+  anchor.style.display = 'none'
+  document.body.append(anchor)
   anchor.click()
-  URL.revokeObjectURL(url)
+  setTimeout(() => {
+    anchor.remove()
+    URL.revokeObjectURL(url)
+  }, 30_000)
 }

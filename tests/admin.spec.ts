@@ -20,6 +20,8 @@ const TEST_EMAIL = 'playwright-admin@example.org'
 const TEST_DID = 'did:key:z6MkfDLjE5Kip9E7YRitEbrNAcCYi2AviAY8Ny7hoYnCSgav'
 const REPLACEMENT_DID = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK'
 
+const AUDIT_TABLE = process.env.AUDIT_TABLE ?? 'lcw-admin-audit'
+
 const dynamo = new DynamoDBClient({
   region: 'us-east-1',
   endpoint: process.env.DYNAMO_ENDPOINT_URL ?? 'http://localhost:8000',
@@ -51,6 +53,23 @@ async function readAccount() {
     Key: { email: { S: TEST_EMAIL } }
   }))
   return Item
+}
+
+// Writes one record straight into the log, to render states the UI cannot be
+// driven into on demand.
+async function seedAuditRecord(action: string, detail: object) {
+  await dynamo.send(new PutItemCommand({
+    TableName: AUDIT_TABLE,
+    Item: {
+      targetEmail: { S: TEST_EMAIL },
+      createdAt: { S: new Date().toISOString() },
+      log: { S: 'all' },
+      action: { S: action },
+      adminDid: { S: 'did:key:z6MkuFws5wb95oYR5ZihACEdQUTxQEgZ3t5kp78Xbv4P7ukJ' },
+      adminEmail: { S: ADMIN_EMAIL },
+      detail: { S: JSON.stringify(detail) }
+    }
+  }))
 }
 
 async function signIn(page: Page) {
@@ -127,4 +146,53 @@ test('deletes an account, keeping the row that was removed', async ({ page }) =>
   await expect(page.getByText('no longer exists')).toBeVisible()
   await page.getByText('The removed row').first().click()
   await expect(page.getByText('dcc-was-playwright-admin').first()).toBeVisible()
+})
+
+
+// The API appends a correction when an action was recorded and then did not
+// apply. Showing that as a completed handover would tell an admin the opposite
+// of what happened.
+test('shows an aborted DID reset as not applied', async ({ page }) => {
+  await seedAuditRecord('account.did.reset.aborted', {
+    newDid: REPLACEMENT_DID,
+    why: 'The account changed between reading it and writing it; nothing was changed.'
+  })
+
+  await signIn(page)
+  await page.goto(`/#/account?email=${encodeURIComponent(TEST_EMAIL)}`)
+
+  await expect(page.getByText('DID reset recorded but not applied').first()).toBeVisible()
+  await expect(page.getByText('nothing was changed').first()).toBeVisible()
+})
+
+// Moving between accounts must not leave a destructive panel armed for the one
+// that was on screen a moment ago.
+test('clears the delete confirmation when switching accounts', async ({ page }) => {
+  const other = 'playwright-admin-other@example.org'
+  await dynamo.send(new PutItemCommand({
+    TableName: ACCOUNT_TABLE,
+    Item: {
+      email: { S: other },
+      did: { S: REPLACEMENT_DID },
+      spaceURL: { S: 'http://localhost:3000/space/dcc-was-playwright-other' },
+      CreatedAt: { S: new Date().toISOString() }
+    }
+  }))
+
+  try {
+    await signIn(page)
+    await page.goto(`/#/account?email=${encodeURIComponent(TEST_EMAIL)}`)
+    await page.getByLabel(`Type ${TEST_EMAIL} to confirm`).fill(TEST_EMAIL)
+    await expect(page.getByRole('button', { name: 'Delete account' })).toBeEnabled()
+
+    await page.goto(`/#/account?email=${encodeURIComponent(other)}`)
+    await expect(page.getByRole('heading', { name: other })).toBeVisible()
+    await expect(page.getByLabel(`Type ${other} to confirm`)).toHaveValue('')
+    await expect(page.getByRole('button', { name: 'Delete account' })).toBeDisabled()
+  } finally {
+    await dynamo.send(new DeleteItemCommand({
+      TableName: ACCOUNT_TABLE,
+      Key: { email: { S: other } }
+    }))
+  }
 })

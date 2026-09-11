@@ -15,6 +15,8 @@ export default defineConfig({
   webServer: {
     command: 'npm run dev -- --port 5174',
     url: 'http://localhost:5174',
-    reuseExistingServer: true,
+    // Not in CI: reusing whatever happens to be on the port there would mean
+    // testing a stale build and passing.
+    reuseExistingServer: !process.env.CI,
   },
 });

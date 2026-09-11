@@ -21,6 +21,11 @@ export interface AuditEntry {
     newDid?: string
     reason?: string
     removed?: Account
+    // Present on the corrections the API appends when an action was recorded
+    // and then did not apply.
+    why?: string
+    // Set on the records add-admin.mjs writes, which are not signed requests.
+    unauthenticated?: boolean
   }
 }
 
@@ -161,6 +166,7 @@ export function deleteAccount(email: string) {
   )
 }
 
-export function listAudit() {
-  return request<{ entries: AuditEntry[] }>('GET', '/audit')
+export function listAudit(cursor?: string) {
+  const suffix = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
+  return request<{ entries: AuditEntry[]; nextCursor?: string }>('GET', `/audit${suffix}`)
 }

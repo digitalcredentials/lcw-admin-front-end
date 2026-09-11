@@ -1,24 +1,47 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Layout from '../components/Layout'
 import { listAudit, type AuditEntry } from '../lib/api'
 
+// Anything unrecognised shows its raw action rather than being labelled as one
+// of these: an aborted handover shown as a completed one would be worse than
+// showing nothing.
 const LABELS: Record<string, string> = {
   'account.delete': 'Account deleted',
-  'account.did.reset': 'Controlling DID reset'
+  'account.delete.aborted': 'Deletion recorded but not applied',
+  'account.did.reset': 'Controlling DID reset',
+  'account.did.reset.aborted': 'DID reset recorded but not applied',
+  'admin.add': 'Admin registered',
+  'admin.rekey': 'Admin key changed',
+  'admin.remove': 'Admin removed'
 }
 
 export default function AuditPage() {
   const [entries, setEntries] = useState<AuditEntry[]>([])
+  const [cursor, setCursor] = useState<string | undefined>()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  useEffect(() => {
-    listAudit()
-      .then((result) => setEntries(result.entries))
-      .catch(() => setError('Could not load the activity log.'))
-      .finally(() => setLoading(false))
+  // The log is paged. Following the cursor is what makes "everything" true -
+  // without it the page would quietly stop at the first hundred records and
+  // still claim to show the lot.
+  const load = useCallback(async (from?: string) => {
+    setLoading(true)
+    setError('')
+    try {
+      const result = await listAudit(from)
+      setEntries((existing) => (from ? [...existing, ...result.entries] : result.entries))
+      setCursor(result.nextCursor)
+    } catch {
+      setError('Could not load the activity log.')
+    } finally {
+      setLoading(false)
+    }
   }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
 
   return (
     <Layout>
@@ -80,6 +103,16 @@ export default function AuditPage() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {cursor && !loading && (
+        <button
+          type="button"
+          onClick={() => load(cursor)}
+          className="mt-4 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
+        >
+          Load earlier actions
+        </button>
       )}
     </Layout>
   )

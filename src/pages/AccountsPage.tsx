@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Layout from '../components/Layout'
 import Did from '../components/Did'
@@ -11,17 +11,30 @@ export default function AccountsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
+  // Searching races: each keystroke starts a request, and a slower earlier one
+  // must not land after a newer one and leave the list showing results for a
+  // query nobody typed any more - with a cursor belonging to that older query.
+  const latestRequest = useRef(0)
+
   const load = useCallback(async (search: string, from?: string) => {
+    const request = ++latestRequest.current
     setLoading(true)
     setError('')
     try {
       const result = await listAccounts({ query: search, cursor: from })
+      if (request !== latestRequest.current) {
+        return
+      }
       setAccounts((existing) => (from ? [...existing, ...result.accounts] : result.accounts))
       setCursor(result.nextCursor)
     } catch {
-      setError('Could not load accounts.')
+      if (request === latestRequest.current) {
+        setError('Could not load accounts.')
+      }
     } finally {
-      setLoading(false)
+      if (request === latestRequest.current) {
+        setLoading(false)
+      }
     }
   }, [])
 
@@ -93,7 +106,14 @@ export default function AccountsPage() {
             {!loading && accounts.length === 0 && (
               <tr>
                 <td colSpan={4} className="px-4 py-8 text-center text-sm text-gray-500">
-                  {query ? 'No accounts match that search.' : 'No accounts yet.'}
+                  {/* A filtered page can be empty while later pages still
+                      match, so an empty page is only "no matches" when there
+                      is nothing left to search. */}
+                  {!query
+                    ? 'No accounts yet.'
+                    : cursor
+                      ? 'Nothing on this page matches — keep looking.'
+                      : 'No accounts match that search.'}
                 </td>
               </tr>
             )}
