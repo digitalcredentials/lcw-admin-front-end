@@ -20,7 +20,8 @@ const TEST_EMAIL = 'playwright-admin@example.org'
 const TEST_DID = 'did:key:z6MkfDLjE5Kip9E7YRitEbrNAcCYi2AviAY8Ny7hoYnCSgav'
 const REPLACEMENT_DID = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK'
 
-const AUDIT_TABLE = process.env.AUDIT_TABLE ?? 'lcw-admin-audit'
+// Named as the backend names it, so one export configures both.
+const AUDIT_TABLE = process.env.AUDIT_TABLE_NAME ?? 'lcw-admin-audit'
 
 const dynamo = new DynamoDBClient({
   region: 'us-east-1',
@@ -57,12 +58,16 @@ async function readAccount() {
 
 // Writes one record straight into the log, to render states the UI cannot be
 // driven into on demand.
+const seededAuditKeys: { targetEmail: string; createdAt: string }[] = []
+
 async function seedAuditRecord(action: string, detail: object) {
+  const createdAt = new Date().toISOString()
+  seededAuditKeys.push({ targetEmail: TEST_EMAIL, createdAt })
   await dynamo.send(new PutItemCommand({
     TableName: AUDIT_TABLE,
     Item: {
       targetEmail: { S: TEST_EMAIL },
-      createdAt: { S: new Date().toISOString() },
+      createdAt: { S: createdAt },
       log: { S: 'all' },
       action: { S: action },
       adminDid: { S: 'did:key:z6MkuFws5wb95oYR5ZihACEdQUTxQEgZ3t5kp78Xbv4P7ukJ' },
@@ -86,6 +91,16 @@ test.beforeEach(async () => {
 
 test.afterEach(async () => {
   await removeAccount()
+  // The log is append-only by design, so a test that writes to it has to clean
+  // up directly - otherwise every run leaves a permanent record behind and the
+  // throwaway account's history grows past what account-get returns.
+  while (seededAuditKeys.length > 0) {
+    const key = seededAuditKeys.pop()!
+    await dynamo.send(new DeleteItemCommand({
+      TableName: AUDIT_TABLE,
+      Key: { targetEmail: { S: key.targetEmail }, createdAt: { S: key.createdAt } }
+    }))
+  }
 })
 
 test('refuses a passphrase that is not a registered admin', async ({ page }) => {
@@ -195,4 +210,35 @@ test('clears the delete confirmation when switching accounts', async ({ page }) 
       Key: { email: { S: other } }
     }))
   }
+})
+
+
+// The passphrase an admin chooses on someone's behalf is the only way into that
+// account afterwards: it is not in the audit log, which stores only the public
+// DID. It must survive the reload that follows the reset.
+test('keeps the admin-chosen passphrase on screen after the reset', async ({ page }) => {
+  const passphrase = 'a passphrase chosen for the account holder'
+
+  await signIn(page)
+  await page.goto(`/#/account?email=${encodeURIComponent(TEST_EMAIL)}`)
+  await page.getByRole('radio', { name: /Choose a passphrase on their behalf/ }).check()
+  await page.getByLabel('Passphrase for the account holder').fill(passphrase)
+  await page.getByRole('button', { name: 'Reset controlling DID' }).click()
+
+  await expect(page.getByText('then forget it')).toBeVisible()
+  await expect(page.getByText(passphrase, { exact: false })).toBeVisible()
+
+  // Still there once the reload has completed and the panels have remounted.
+  await expect(page.getByText('Controlling DID reset').first()).toBeVisible()
+  await expect(page.getByText(passphrase, { exact: false })).toBeVisible()
+})
+
+// The API answers 404 for any email it has no row for. Reporting that as a
+// deletion would tell an admin an account was destroyed that never existed.
+test('does not claim an unknown address was deleted', async ({ page }) => {
+  await signIn(page)
+  await page.goto(`/#/account?email=${encodeURIComponent('never-registered@example.org')}`)
+
+  await expect(page.getByText('No wallet account is registered')).toBeVisible()
+  await expect(page.getByText('no longer exists')).toHaveCount(0)
 })

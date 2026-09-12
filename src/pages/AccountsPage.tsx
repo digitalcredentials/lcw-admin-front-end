@@ -103,7 +103,7 @@ export default function AccountsPage() {
                 </td>
               </tr>
             ))}
-            {!loading && accounts.length === 0 && (
+            {!loading && !error && accounts.length === 0 && (
               <tr>
                 <td colSpan={4} className="px-4 py-8 text-center text-sm text-gray-500">
                   {/* A filtered page can be empty while later pages still

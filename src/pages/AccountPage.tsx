@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import Layout from '../components/Layout'
 import Did from '../components/Did'
@@ -32,7 +32,13 @@ const ACTION_LABELS: Record<string, string> = {
 // carried out — see the CORS note in lib/api.ts. For a destructive action that
 // distinction matters more than any other, so it is never glossed.
 function actionFailureMessage(error: unknown, whatItWouldHaveDone: string): string {
-  const status = error instanceof ApiError ? error.status : 0
+  // A failure that is not an ApiError never reached the network at all - a
+  // session key that cannot be rehydrated, say - so it is certain that nothing
+  // happened, which is the opposite of the status-0 case below.
+  if (!(error instanceof ApiError)) {
+    return 'The request could not be sent, so nothing was changed. Sign in again and retry.'
+  }
+  const status = error.status
   if (status === 0) {
     return `The request could not be read back, so it is not possible to tell whether ${whatItWouldHaveDone}. Reload this page before trying again.`
   }
@@ -49,33 +55,55 @@ export default function AccountPage() {
 
   const [account, setAccount] = useState<Account | null>(null)
   const [history, setHistory] = useState<AuditEntry[]>([])
-  const [deleted, setDeleted] = useState(false)
+  const [loaded, setLoaded] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  // Held here rather than inside the panel that produces it. The panel unmounts
+  // when the account reloads, and an admin-chosen passphrase that disappears on
+  // success is gone for good: it is not in the audit log, which stores only the
+  // public DID, and it is now the only way into that account.
+  const [handover, setHandover] = useState<{ passphrase: string; did: string } | null>(null)
+
+  // Only the query parameter changes between two accounts, so this component is
+  // never remounted and a slow response for one can land after a newer one.
+  const latestRequest = useRef(0)
+  const shownEmail = useRef('')
 
   const load = useCallback(async () => {
+    const request = ++latestRequest.current
     setLoading(true)
     setError('')
-    // Cleared before the request, so a slow load never shows one account's
-    // details - or its armed delete button - under another's heading.
-    setAccount(null)
-    setHistory([])
-    setDeleted(false)
+    // Cleared only when the account being shown changes, so a reload after an
+    // action does not blank the page - but a different account never inherits
+    // the previous one's details or its armed delete button.
+    if (shownEmail.current !== email) {
+      shownEmail.current = email
+      setAccount(null)
+      setHistory([])
+      setLoaded(false)
+      setHandover(null)
+    }
     try {
       const result = await getAccount(email)
+      if (request !== latestRequest.current) {
+        return
+      }
       setAccount(result.account)
       setHistory(result.history)
-      // The API answers 404 with the account's history when it has been
-      // deleted. Only that is a deletion; a request that failed is not.
-      setDeleted(result.account === null)
+      setLoaded(true)
     } catch (err) {
+      if (request !== latestRequest.current) {
+        return
+      }
       setError(
         err instanceof ApiError && err.status === 0
           ? 'Could not reach the admin API. This account may still exist — nothing here is up to date.'
           : 'Could not load this account.'
       )
     } finally {
-      setLoading(false)
+      if (request === latestRequest.current) {
+        setLoading(false)
+      }
     }
   }, [email])
 
@@ -114,12 +142,41 @@ export default function AccountPage() {
       )}
       {loading && <p className="mt-4 text-sm text-gray-500">Loading…</p>}
 
-      {deleted && (
+      {/* The API answers 404 for any email it has no row for, deleted or never
+          registered, so the deletion banner follows the log rather than the
+          absence: only a recorded deletion carries the row that restores it. */}
+      {loaded && !account && history.some((entry) => entry.detail?.removed) && (
         <p className="mt-4 rounded-2xl border border-gray-200 bg-white p-6 text-sm text-gray-600">
           This account no longer exists. Its history is below, and it includes
           the row that was removed — putting that row back restores the account
           and its access to its space.
         </p>
+      )}
+
+      {loaded && !account && !history.some((entry) => entry.detail?.removed) && (
+        <p className="mt-4 rounded-2xl border border-gray-200 bg-white p-6 text-sm text-gray-600">
+          No wallet account is registered for this address.
+          {history.length > 0 && ' The entries below mention it, but none of them removed an account.'}
+        </p>
+      )}
+
+      {handover && (
+        <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm">
+          <p className="font-medium text-amber-900">
+            Give {email} this passphrase, then forget it.
+          </p>
+          <p className="mt-2 font-mono text-base break-all text-amber-900">
+            {handover.passphrase}
+          </p>
+          <p className="mt-2 font-mono text-xs break-all text-amber-800">{handover.did}</p>
+          <button
+            type="button"
+            onClick={() => setHandover(null)}
+            className="mt-3 text-xs font-medium text-amber-900 underline"
+          >
+            I have passed it on — hide it
+          </button>
+        </div>
       )}
 
       {account && (
@@ -153,7 +210,12 @@ export default function AccountPage() {
 
           {/* Keyed by account, so switching accounts resets what is typed into
               them rather than carrying it across. */}
-          <ResetDidPanel key={`reset-${account.email}`} account={account} onDone={load} />
+          <ResetDidPanel
+            key={`reset-${account.email}`}
+            account={account}
+            onDone={load}
+            onHandover={setHandover}
+          />
           <DeletePanel
             key={`delete-${account.email}`}
             account={account}
@@ -162,12 +224,20 @@ export default function AccountPage() {
         </>
       )}
 
-      <History entries={history} />
+      <History entries={history} known={loaded} />
     </Layout>
   )
 }
 
-function ResetDidPanel({ account, onDone }: { account: Account; onDone: () => void }) {
+function ResetDidPanel({
+  account,
+  onDone,
+  onHandover
+}: {
+  account: Account
+  onDone: () => void
+  onHandover: (handover: { passphrase: string; did: string }) => void
+}) {
   const [mode, setMode] = useState<'paste' | 'derive'>('paste')
   const [did, setDid] = useState('')
   const [passphrase, setPassphrase] = useState('')
@@ -175,7 +245,7 @@ function ResetDidPanel({ account, onDone }: { account: Account; onDone: () => vo
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [handover, setHandover] = useState<{ passphrase: string; did: string } | null>(null)
+  const [note, setNote] = useState('')
 
   // Derived here rather than anywhere else: a passphrase typed into this box
   // stays in this browser, and only the resulting public DID is sent.
@@ -207,16 +277,24 @@ function ResetDidPanel({ account, onDone }: { account: Account; onDone: () => vo
     setBusy(true)
     setError('')
     try {
-      await resetDid(account.email, chosenDid, reason)
+      const result = await resetDid(account.email, chosenDid, reason)
+      // Nothing was changed and nothing was recorded, so this is not a
+      // handover and must not be reported as one.
+      if (result.unchanged) {
+        setNote('That DID already controls this account, so nothing was changed or recorded.')
+        setBusy(false)
+        return
+      }
       // The admin-chosen passphrase is the credential the account holder now
-      // needs. It is kept on screen until dismissed rather than cleared on
-      // success, which would destroy it at the moment it starts to matter.
+      // needs. It is handed to the page, which outlives this panel: clearing it
+      // here on success would destroy it at the moment it starts to matter.
       if (mode === 'derive') {
-        setHandover({ passphrase, did: chosenDid })
+        onHandover({ passphrase, did: chosenDid })
       }
       setDid('')
       setPassphrase('')
       setReason('')
+      setNote('')
       onDone()
     } catch (err) {
       setError(actionFailureMessage(err, 'the DID was changed'))
@@ -234,27 +312,6 @@ function ResetDidPanel({ account, onDone }: { account: Account; onDone: () => vo
         The change is recorded against your name, and the current DID is kept so
         it can be undone.
       </p>
-
-      {handover && (
-        <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm">
-          <p className="font-medium text-amber-900">
-            Give {account.email} this passphrase, then forget it.
-          </p>
-          <p className="mt-2 font-mono text-base break-all text-amber-900">
-            {handover.passphrase}
-          </p>
-          <p className="mt-2 font-mono text-xs break-all text-amber-800">
-            {handover.did}
-          </p>
-          <button
-            type="button"
-            onClick={() => setHandover(null)}
-            className="mt-3 text-xs font-medium text-amber-900 underline"
-          >
-            I have passed it on — hide it
-          </button>
-        </div>
-      )}
 
       <div className="mt-4 space-y-3">
         <label className="flex items-start gap-2 text-sm">
@@ -314,6 +371,12 @@ function ResetDidPanel({ account, onDone }: { account: Account; onDone: () => vo
               onChange={(e) => setPassphrase(e.target.value)}
               placeholder="A passphrase to give the account holder"
               aria-label="Passphrase for the account holder"
+              // Spellcheck sends field contents to a remote service in some
+              // browsers, and this field holds a credential that opens someone
+              // else's wallet.
+              spellCheck={false}
+              autoComplete="off"
+              autoCorrect="off"
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:border-transparent focus:ring-2 focus:ring-indigo-500 focus:outline-none"
             />
             {derivedDid && (
@@ -339,6 +402,7 @@ function ResetDidPanel({ account, onDone }: { account: Account; onDone: () => vo
             A mistyped DID would hand the account to a key nobody holds.
           </p>
         )}
+        {note && <p className="text-sm text-gray-600">{note}</p>}
         {error && (
           <p role="alert" className="text-sm text-red-600">
             {error}
@@ -363,19 +427,47 @@ function DeletePanel({ account, onDeleted }: { account: Account; onDeleted: () =
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
+  const [removed, setRemoved] = useState<Account | null>(null)
+
   async function submit() {
     setBusy(true)
     setError('')
+    let result
     try {
-      const result = await deleteAccount(account.email)
-      // The removed row, handed to the admin who removed it. Restoring it is
-      // what undoes this, so it should not only live in the audit table.
-      download(`${account.email}-account-record.json`, JSON.stringify(result.deleted, null, 2))
-      onDeleted()
+      result = await deleteAccount(account.email)
     } catch (err) {
       setError(actionFailureMessage(err, 'the account was deleted'))
       setBusy(false)
+      return
     }
+
+    // Past this point the deletion is confirmed, so nothing below may report
+    // it as uncertain. The removed row is the means of undoing it, so if the
+    // download cannot be started the row is put on screen instead of lost.
+    try {
+      download(`${account.email}-account-record.json`, JSON.stringify(result.deleted, null, 2))
+      onDeleted()
+    } catch {
+      setRemoved(result.deleted)
+      setBusy(false)
+    }
+  }
+
+  if (removed) {
+    return (
+      <section className="mt-6 rounded-2xl border border-amber-300 bg-amber-50 p-6">
+        <h2 className="font-semibold text-amber-900">
+          Account deleted — save this row
+        </h2>
+        <p className="mt-1 text-sm text-amber-900">
+          The account was removed, but the file could not be downloaded. This is
+          the row that restores it; it is also in the activity log.
+        </p>
+        <pre className="mt-3 overflow-x-auto rounded-lg bg-white p-3 text-xs text-gray-800">
+          {JSON.stringify(removed, null, 2)}
+        </pre>
+      </section>
+    )
   }
 
   return (
@@ -418,7 +510,20 @@ function DeletePanel({ account, onDeleted }: { account: Account; onDeleted: () =
   )
 }
 
-function History({ entries }: { entries: AuditEntry[] }) {
+function History({ entries, known }: { entries: AuditEntry[]; known: boolean }) {
+  // "Nobody has acted on this account" is a claim about the log, and a load
+  // that failed read no log at all.
+  if (!known) {
+    return (
+      <section className="mt-6">
+        <h2 className="font-semibold text-gray-900">History</h2>
+        <p className="mt-1 text-sm text-gray-500">
+          Not read — the admin API could not be reached.
+        </p>
+      </section>
+    )
+  }
+
   if (entries.length === 0) {
     return (
       <section className="mt-6">
@@ -454,9 +559,9 @@ function History({ entries }: { entries: AuditEntry[] }) {
             {entry.detail?.why && (
               <p className="mt-1 text-gray-600">{entry.detail.why}</p>
             )}
-            {entry.detail?.previousDid && (
+            {(entry.detail?.previousDid || entry.detail?.newDid) && (
               <p className="mt-2 font-mono text-xs break-all text-gray-500">
-                {entry.detail.previousDid} → {entry.detail.newDid}
+                {entry.detail.previousDid ?? '(none)'} → {entry.detail.newDid ?? '(unchanged)'}
               </p>
             )}
             {entry.detail?.reason && (

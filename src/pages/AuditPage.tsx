@@ -81,6 +81,12 @@ export default function AuditPage() {
                   </td>
                   <td className="px-4 py-3 text-gray-800">
                     {LABELS[entry.action] ?? entry.action}
+                    {/* The correction's own explanation comes first: without
+                        it the row shows only the justification for an action
+                        that did not happen. */}
+                    {entry.detail?.why && (
+                      <span className="block text-xs text-gray-600">{entry.detail.why}</span>
+                    )}
                     {entry.detail?.reason && (
                       <span className="block text-xs text-gray-500">
                         “{entry.detail.reason}”

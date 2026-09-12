@@ -21,6 +21,8 @@ export interface AuditEntry {
     newDid?: string
     reason?: string
     removed?: Account
+    // On a correction: the timestamp of the record it retracts.
+    corrects?: string
     // Present on the corrections the API appends when an action was recorded
     // and then did not apply.
     why?: string
@@ -144,8 +146,15 @@ export async function getAccount(email: string): Promise<AccountDetail> {
   try {
     return await request<AccountDetail>('GET', `/accounts/${pathSegment(email)}`)
   } catch (error) {
-    if (error instanceof ApiError && error.status === 404 && error.data) {
-      return error.data as AccountDetail
+    // Only this API's own 404 carries an account detail. A gateway's 404 (a
+    // wrong base URL, an undeployed route) is JSON too, so the body's shape is
+    // what decides - unwrapping one of those would put `undefined` into the
+    // page's state and blank the console with no error shown.
+    if (error instanceof ApiError && error.status === 404) {
+      const data = error.data as Partial<AccountDetail> | undefined
+      if (data && 'account' in data && Array.isArray(data.history)) {
+        return data as AccountDetail
+      }
     }
     throw error
   }

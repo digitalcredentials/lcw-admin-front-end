@@ -37,18 +37,24 @@ user-initiated, through the wallet's own email confirmation flow.
 Three states are easy to report wrongly, and each would mislead an admin about
 something irreversible:
 
-- **An unreachable API is not a deleted account.** The API answers 404 with the
-  account's history when it has been deleted; only that renders as a deletion.
-  A request that failed says so, and says the account may well still exist.
+- **An unreachable API is not a deleted account, and neither is an unknown
+  address.** The API answers 404 for any email it holds no row for, so the
+  deletion banner follows the log instead: it appears only when the history
+  contains the removed row that would restore the account. An address that was
+  never registered says exactly that, and a request that failed says the account
+  may well still exist.
 - **A recorded action that did not apply is not a completed one.** The API
   appends corrections (`account.delete.aborted`, `account.did.reset.aborted`)
   rather than editing the log, and those render as "recorded but not applied".
   Any action this console does not recognise shows its raw name rather than
   being labelled as something it might not be.
-- **A request that could not be read back is not a request that did nothing.**
-  Where the browser cannot see the response (see below), a failed delete or
-  reset says exactly that and asks the admin to reload before retrying, rather
-  than implying nothing happened.
+- **A request that could not be read back is not a request that did nothing**,
+  and a request that was never sent is not either. Where the browser cannot see
+  the response (see below), a failed delete or reset says exactly that and asks
+  the admin to reload before retrying; a failure that never reached the network
+  says plainly that nothing was changed. And once a deletion has been confirmed,
+  nothing afterwards can report it as uncertain - if the removed row cannot be
+  downloaded it is put on screen instead, rather than lost.
 
 ## Signing in
 
@@ -89,7 +95,9 @@ usable and the second unnecessary.
 
 When an admin does choose the passphrase, it stays on screen after the reset
 until they dismiss it, because that passphrase is now the only way into the
-account and the moment it takes effect is the moment it starts to matter.
+account and the moment it takes effect is the moment it starts to matter. It is
+held by the page rather than by the form, so the reload that follows the reset
+cannot take it away, and a test pins that.
 
 **Deleting an account revokes access without destroying anything.** The row is
 what lets someone sign in and what proves to the WAS server that they control
