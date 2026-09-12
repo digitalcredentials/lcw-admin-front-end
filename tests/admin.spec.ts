@@ -182,6 +182,12 @@ test('shows an aborted DID reset as not applied', async ({ page }) => {
 
   await expect(page.getByText('DID reset recorded but not applied').first()).toBeVisible()
   await expect(page.getByText('nothing was changed').first()).toBeVisible()
+
+  // And on the feed, where the same two DIDs would otherwise read as a
+  // handover that took place.
+  await page.getByRole('link', { name: 'Activity' }).click()
+  await expect(page.getByText('DID reset recorded but not applied').first()).toBeVisible()
+  await expect(page.getByText('would have been').first()).toBeVisible()
 })
 
 // Moving between accounts must not leave a destructive panel armed for the one

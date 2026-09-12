@@ -90,9 +90,15 @@ export default function AuditPage() {
                     )}
                     {/* What the action actually changed. A feed that says a
                         DID was reset without saying what it was reset to
-                        describes the least important part of a handover. */}
+                        describes the least important part of a handover.
+                        On a correction the same two DIDs describe a handover
+                        that did not happen, so the arrow is introduced as such
+                        rather than left to read like one that did. */}
                     {(entry.detail?.previousDid || entry.detail?.newDid) && (
                       <span className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-gray-500">
+                        {entry.action.endsWith('.aborted') && (
+                          <span className="text-gray-400">would have been</span>
+                        )}
                         <Did value={entry.detail.previousDid} truncate />
                         <span aria-hidden="true">→</span>
                         <Did value={entry.detail.newDid} truncate />
