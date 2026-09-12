@@ -137,6 +137,10 @@ test('resets the controlling DID and records who did it', async ({ page }) => {
 
   await page.getByRole('link', { name: 'Activity' }).click()
   await expect(page.getByRole('cell', { name: TEST_EMAIL }).first()).toBeVisible()
+  // The feed says what the handover changed, not merely that one happened.
+  // DIDs are truncated there, so the full value is matched on the title.
+  await expect(page.getByTitle(REPLACEMENT_DID, { exact: false }).first()).toBeVisible()
+  await expect(page.getByTitle(TEST_DID, { exact: false }).first()).toBeVisible()
 })
 
 test('deletes an account, keeping the row that was removed', async ({ page }) => {

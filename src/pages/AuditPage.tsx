@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Layout from '../components/Layout'
+import Did from '../components/Did'
 import { listAudit, type AuditEntry } from '../lib/api'
 
 // Anything unrecognised shows its raw action rather than being labelled as one
@@ -86,6 +87,16 @@ export default function AuditPage() {
                         that did not happen. */}
                     {entry.detail?.why && (
                       <span className="block text-xs text-gray-600">{entry.detail.why}</span>
+                    )}
+                    {/* What the action actually changed. A feed that says a
+                        DID was reset without saying what it was reset to
+                        describes the least important part of a handover. */}
+                    {(entry.detail?.previousDid || entry.detail?.newDid) && (
+                      <span className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-gray-500">
+                        <Did value={entry.detail.previousDid} truncate />
+                        <span aria-hidden="true">→</span>
+                        <Did value={entry.detail.newDid} truncate />
+                      </span>
                     )}
                     {entry.detail?.reason && (
                       <span className="block text-xs text-gray-500">
