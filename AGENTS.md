@@ -86,7 +86,18 @@ means the console compiles, not that it works. The e2e suite is the thing that
 actually exercises behaviour, and it currently runs locally only. Wiring it into
 CI is worthwhile and is its own piece of work.
 
-`npm run lint` currently passes with three `react(set-state-in-effect)`
-warnings in `AuditPage.tsx` and `AccountPage.tsx`. oxlint exits 0 on warnings,
-so they do not fail the build; they are worth clearing rather than leaving to
-accumulate.
+`npm run lint` is `oxlint --deny-warnings`, so a new warning fails the build.
+Without that flag oxlint exits 0 on warnings and the lint step could not fail
+at all, which in a CI that only lints and builds made half of it decorative.
+
+One rule is turned off in `.oxlintrc.json`: `react/set-state-in-effect`. It
+fired three times — twice on `useEffect(() => { load() })` in `AuditPage` and
+`AccountPage`, which is an async fetch on mount, and once on the DID derivation
+in `AccountPage`, which cannot happen during render because `deriveKeyPair` is
+async. All three are the right shape for what they do, so the rule is off rather
+than the code contorted around it. New instances will not be caught, which is
+the trade.
+
+`tsc -b` covers `tests/` and `playwright.config.ts` through
+`tsconfig.test.json`, so the e2e suite cannot quietly stop compiling. It is
+typechecked, not run.
