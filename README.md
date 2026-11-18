@@ -1,5 +1,10 @@
 # LCW Admin
 
+> [!IMPORTANT]
+> **Alpha.** This is part of the Learner Credential Wallet alpha, an early test
+> version. It may change without notice. We read issues, but may not answer or
+> fix them during the alpha.
+
 A small console for administering **Learner Credential Wallet accounts**:
 viewing them, filtering and searching them, exporting them as a CSV, and
 deleting them. React + Vite, talking to
@@ -66,7 +71,7 @@ something irreversible:
 - **A recorded action that did not apply is not a completed one.** The API
   appends a correction (`account.delete.aborted`) rather than editing the log,
   and it renders as "recorded but not applied". Any action this console does
-  not recognise shows its raw name rather than being labelled as something it
+  not recognize shows its raw name rather than being labeled as something it
   might not be.
 - **A request that could not be read back is not a request that did nothing**,
   and a request that was never sent is not either. Where the browser cannot see
@@ -185,3 +190,7 @@ Two things the suite has to work around, both worth knowing:
 - **The activity log is append-only**, so a throwaway account's history
   accumulates across runs. Assertions have to name what this run did rather
   than match on the log in general.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
