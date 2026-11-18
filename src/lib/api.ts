@@ -6,8 +6,20 @@ import { getSession } from './session'
 export interface Account {
   email: string
   did: string
-  spaceURL?: string
   createdAt?: string
+  // The tester's answer to "Contact me with news and updates"; false for an
+  // account registered before the question was asked
+  contactOptIn: boolean
+  contactOptInUpdatedAt?: string
+}
+
+// What a deletion records: the account as an admin reads it, and the row
+// exactly as it was stored, which is what a restore puts back
+export interface RemovedRow {
+  email?: string
+  did?: string
+  createdAt?: string
+  item?: Record<string, unknown>
 }
 
 export interface AuditEntry {
@@ -17,10 +29,7 @@ export interface AuditEntry {
   adminDid: string
   adminEmail: string
   detail?: {
-    previousDid?: string
-    newDid?: string
-    reason?: string
-    removed?: Account
+    removed?: RemovedRow
     // On a correction: the timestamp of the record it retracts.
     corrects?: string
     // Present on the corrections the API appends when an action was recorded
@@ -52,10 +61,11 @@ export class ApiError extends Error {
 
 const base = (import.meta.env.VITE_ADMIN_API_BASE_URL ?? '').replace(/\/+$/, '')
 
-// The admin key pair is derived from the passphrase exactly as the wallet
-// derives a holder's: SHA-256(passphrase) as the 32-byte Ed25519 seed, so the
-// same passphrase always yields the same did:key. The DID registered in the
-// admin table must have been derived the same way.
+// The admin key pair is derived from the passphrase: SHA-256(passphrase) as the
+// 32-byte Ed25519 seed, so the same passphrase always yields the same did:key.
+// The DID registered in the admin table must have been derived the same way
+// (scripts/add-admin.mjs --passphrase does). It has nothing to do with any
+// wallet account's keys.
 export async function deriveKeyPair(passphrase: string) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(passphrase))
   const keyPair = await Ed25519VerificationKey.generate({ seed: new Uint8Array(digest) })
@@ -129,12 +139,31 @@ export function whoami(keyPair: Ed25519VerificationKey): Promise<AdminIdentity> 
   return request<AdminIdentity>('POST', '/login', {}, keyPair)
 }
 
-export function listAccounts(options: { query?: string; cursor?: string } = {}) {
+export function listAccounts(options: { query?: string; cursor?: string; limit?: number } = {}) {
   const params = new URLSearchParams()
   if (options.query) params.set('q', options.query)
+  if (options.limit) params.set('limit', String(options.limit))
   if (options.cursor) params.set('cursor', options.cursor)
   const suffix = params.toString() ? `?${params}` : ''
   return request<{ accounts: Account[]; nextCursor?: string }>('GET', `/accounts${suffix}`)
+}
+
+// The largest page the API hands out
+const ALL_PAGE = 200
+
+// Every account, page by page until the API has no more, so the Accounts page
+// can filter, search and export all of them in the browser. `onPage` reports
+// how many have arrived so far.
+export async function listAllAccounts(onPage?: (loaded: number) => void): Promise<Account[]> {
+  const accounts: Account[] = []
+  let cursor: string | undefined
+  do {
+    const page = await listAccounts({ limit: ALL_PAGE, cursor })
+    accounts.push(...page.accounts)
+    onPage?.(accounts.length)
+    cursor = page.nextCursor
+  } while (cursor)
+  return accounts
 }
 
 export type AccountDetail = { account: Account | null; history: AuditEntry[] }
@@ -160,16 +189,8 @@ export async function getAccount(email: string): Promise<AccountDetail> {
   }
 }
 
-export function resetDid(email: string, did: string, reason?: string) {
-  return request<{ email: string; did: string; previousDid?: string; unchanged?: boolean }>(
-    'PUT',
-    `/accounts/${pathSegment(email)}/did`,
-    { did, ...(reason ? { reason } : {}) }
-  )
-}
-
 export function deleteAccount(email: string) {
-  return request<{ deleted: Account; note: string }>(
+  return request<{ deleted: RemovedRow; note: string }>(
     'DELETE',
     `/accounts/${pathSegment(email)}`
   )

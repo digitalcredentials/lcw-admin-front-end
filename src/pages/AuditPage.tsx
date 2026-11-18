@@ -1,17 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Layout from '../components/Layout'
-import Did from '../components/Did'
 import { listAudit, type AuditEntry } from '../lib/api'
 
 // Anything unrecognised shows its raw action rather than being labelled as one
-// of these: an aborted handover shown as a completed one would be worse than
+// of these: an aborted deletion shown as a completed one would be worse than
 // showing nothing.
 const LABELS: Record<string, string> = {
   'account.delete': 'Account deleted',
   'account.delete.aborted': 'Deletion recorded but not applied',
-  'account.did.reset': 'Controlling DID reset',
-  'account.did.reset.aborted': 'DID reset recorded but not applied',
   'admin.add': 'Admin registered',
   'admin.rekey': 'Admin key changed',
   'admin.remove': 'Admin removed'
@@ -87,27 +84,6 @@ export default function AuditPage() {
                         that did not happen. */}
                     {entry.detail?.why && (
                       <span className="block text-xs text-gray-600">{entry.detail.why}</span>
-                    )}
-                    {/* What the action actually changed. A feed that says a
-                        DID was reset without saying what it was reset to
-                        describes the least important part of a handover.
-                        On a correction the same two DIDs describe a handover
-                        that did not happen, so the arrow is introduced as such
-                        rather than left to read like one that did. */}
-                    {(entry.detail?.previousDid || entry.detail?.newDid) && (
-                      <span className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-gray-500">
-                        {entry.action.endsWith('.aborted') && (
-                          <span className="text-gray-400">would have been</span>
-                        )}
-                        <Did value={entry.detail.previousDid} truncate />
-                        <span aria-hidden="true">→</span>
-                        <Did value={entry.detail.newDid} truncate />
-                      </span>
-                    )}
-                    {entry.detail?.reason && (
-                      <span className="block text-xs text-gray-500">
-                        “{entry.detail.reason}”
-                      </span>
                     )}
                   </td>
                   <td className="px-4 py-3">

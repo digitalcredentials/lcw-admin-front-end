@@ -3,10 +3,10 @@
 Notes for agents and developers working on the LCW Admin console.
 
 **`README.md` is the authority on what this console is** — what an admin can
-see and do, the three states it deliberately refuses to report wrongly, how
-sign-in works, and why resetting a controlling DID is a handover rather than a
-password change. Read it first. This file covers only how to get a working
-environment and what to run in it.
+see and do, how the accounts table filters and exports, the three states it
+deliberately refuses to report wrongly, how sign-in works, and why deleting an
+account only stops it signing in. Read it first. This file covers only how to
+get a working environment and what to run in it.
 
 ## What you need running
 
@@ -16,15 +16,15 @@ talks to DynamoDB only:
 
 | Process | Port | From |
 | --- | --- | --- |
-| DynamoDB Local | 8000 | `lcw-front-end/scripts/local-stack/up.sh`, or the one-liner in `lcw-admin-backend/AGENTS.md` |
-| the admin API | 3002 | `lcw-admin-backend` |
+| DynamoDB Local | 8000 | the one-liner in `lcw-admin-back-end/AGENTS.md` |
+| the admin API | 3002 | `lcw-admin-back-end` |
 | the admin console (this one) | 5174 | `npm run dev -- --port 5174` |
 
-You do **not** need the wallet running — not MinIO, not `was-server-aws`, not
+You do **not** need the wallet running — not `was-server-aws`, not
 `lcw-back-end`, and not the wallet's own front end. Bring up
-`lcw-admin-backend` first, following its `AGENTS.md`, which includes registering
-yourself as an admin with `scripts/add-admin.mjs`. Without that there is no
-admin to sign in as, and the console is unusable.
+`lcw-admin-back-end` first, following its `AGENTS.md`, which includes
+registering yourself as an admin with `scripts/add-admin.mjs`. Without that
+there is no admin to sign in as, and the console is unusable.
 
 ## Bring it up
 
@@ -35,8 +35,9 @@ npm run dev -- --port 5174
 ```
 
 Port `5174` rather than `5173` so this and the wallet's own front end can run
-side by side. `.env` is gitignored; `.env.example` already carries the only
-value it needs:
+side by side; FreeWallet's dev server defaults to `5174` too, so pick another
+port when it is running. `.env` is gitignored; `.env.example` already carries
+the only value it needs:
 
 ```
 VITE_ADMIN_API_BASE_URL=http://localhost:3002
@@ -52,14 +53,17 @@ can be escalated into one.
 ## Tests
 
 ```bash
-npm run test:e2e
+ADMIN_EMAIL=you@example.org ADMIN_PASSPHRASE='a long passphrase' npm run test:e2e
+# the console on another port:
+BASE_URL=http://localhost:5184 ADMIN_EMAIL=... npm run test:e2e
 ```
 
 Playwright, against the local stack, so all three processes above must be up.
-The suite signs in, searches, resets a DID and deletes an account, checking each
-time that the table actually changed and that the action was recorded. It
-creates a throwaway account of its own and removes it afterwards, so it never
-touches the wallet's seeded demo account.
+The suite signs in, lists, searches and filters the accounts, checks that the
+exported CSV is exactly the filtered rows, reads a contact choice and deletes an
+account, checking that the table actually changed and that the removed row was
+kept. It seeds two throwaway accounts of its own and removes them afterwards,
+so it never touches anyone else's.
 
 Two things the suite works around, both documented in `README.md` and both worth
 knowing before you debug a failure:
@@ -91,12 +95,10 @@ Without that flag oxlint exits 0 on warnings and the lint step could not fail
 at all, which in a CI that only lints and builds made half of it decorative.
 
 One rule is turned off in `.oxlintrc.json`: `react/set-state-in-effect`. It
-fired three times — twice on `useEffect(() => { load() })` in `AuditPage` and
-`AccountPage`, which is an async fetch on mount, and once on the DID derivation
-in `AccountPage`, which cannot happen during render because `deriveKeyPair` is
-async. All three are the right shape for what they do, so the rule is off rather
-than the code contorted around it. New instances will not be caught, which is
-the trade.
+fires on `useEffect(() => { load() })` in `AccountsPage`, `AccountPage` and
+`AuditPage`, each an async fetch on mount, which is the right shape for what it
+does, so the rule is off rather than the code contorted around it. New
+instances will not be caught, which is the trade.
 
 `tsc -b` covers `tests/` and `playwright.config.ts` through
 `tsconfig.test.json`, so the e2e suite cannot quietly stop compiling. It is
